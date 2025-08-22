@@ -1,4 +1,4 @@
-# 18.07.2025 - RR (Verbesserte Version)
+# 18.07.2025 - RR (TensorFlow Version)
 # Dieses Skript liest alle TransKI Daten aus einem Ordner, erstellt Zeitfenster für eine beliebige Anzahl von Features und normalisiert diese.
 # Anschließend werden verschiedene ML Modelle trainiert (CNN - AE, FFNN - AE, XGBoost, Random Forest) und die Ergebnisse in einer CSV-Datei gespeichert.
 
@@ -6,14 +6,29 @@ import pandas as pd
 import numpy as np
 from helper_functions import ifw_data
 import os
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import DataLoader, TensorDataset
+import tensorflow as tf
+from tensorflow import keras
+from tensorflow.keras import layers, Model, optimizers, callbacks
 import re
-import matplotlib.pyplot as plt
+from sklearn.model_selection import train_test_split
 import json
 from datetime import datetime
+
+# Import matplotlib with error handling
+try:
+    import matplotlib
+    matplotlib.use('Agg')  # Use non-interactive backend to avoid GUI issues
+    import matplotlib.pyplot as plt
+    PLOTTING_AVAILABLE = True
+    print("Matplotlib erfolgreich geladen")
+except ImportError as e:
+    print(f"Matplotlib Import Fehler: {e}")
+    print("Plots werden übersprungen")
+    PLOTTING_AVAILABLE = False
+
+# Set random seeds for reproducibility
+tf.random.set_seed(42)
+np.random.seed(42)
 
 def create_windows_and_normalize_improved(data_objects, feature_names, window_size, step_size):
     """
@@ -48,9 +63,9 @@ def create_windows_and_normalize_improved(data_objects, feature_names, window_si
     
     return np.array(windows), np.array(file_indices), normalization_params
 
-class ImprovedFeedForwardAutoencoder(nn.Module):
+class ImprovedFeedForwardAutoencoder(Model):
     def __init__(self, input_dim):
-        super().__init__()
+        super(ImprovedFeedForwardAutoencoder, self).__init__()
         
         # Berechne sinnvolle Zwischendimensionen
         dim1 = max(input_dim // 2, 64)
@@ -60,46 +75,74 @@ class ImprovedFeedForwardAutoencoder(nn.Module):
         
         print(f"Autoencoder Architektur: {input_dim} -> {dim1} -> {dim2} -> {dim3} -> {bottleneck}")
         
-        self.encoder = nn.Sequential(
-            nn.Linear(input_dim, dim1),
-            nn.BatchNorm1d(dim1),
-            nn.LeakyReLU(0.2),
-            nn.Dropout(0.2),
+        # Encoder
+        self.encoder_layers = [
+            layers.Dense(dim1, activation=None),
+            layers.BatchNormalization(),
+            layers.LeakyReLU(0.2),
+            layers.Dropout(0.2),
             
-            nn.Linear(dim1, dim2),
-            nn.BatchNorm1d(dim2),
-            nn.LeakyReLU(0.2),
-            nn.Dropout(0.2),
+            layers.Dense(dim2, activation=None),
+            layers.BatchNormalization(),
+            layers.LeakyReLU(0.2),
+            layers.Dropout(0.2),
             
-            nn.Linear(dim2, dim3),
-            nn.BatchNorm1d(dim3),
-            nn.LeakyReLU(0.2),
+            layers.Dense(dim3, activation=None),
+            layers.BatchNormalization(),
+            layers.LeakyReLU(0.2),
             
-            nn.Linear(dim3, bottleneck)
-        )
+            layers.Dense(bottleneck, activation=None)
+        ]
         
-        self.decoder = nn.Sequential(
-            nn.Linear(bottleneck, dim3),
-            nn.BatchNorm1d(dim3),
-            nn.LeakyReLU(0.2),
+        # Decoder
+        self.decoder_layers = [
+            layers.Dense(dim3, activation=None),
+            layers.BatchNormalization(),
+            layers.LeakyReLU(0.2),
             
-            nn.Linear(dim3, dim2),
-            nn.BatchNorm1d(dim2),
-            nn.LeakyReLU(0.2),
-            nn.Dropout(0.2),
+            layers.Dense(dim2, activation=None),
+            layers.BatchNormalization(),
+            layers.LeakyReLU(0.2),
+            layers.Dropout(0.2),
             
-            nn.Linear(dim2, dim1),
-            nn.BatchNorm1d(dim1),
-            nn.LeakyReLU(0.2),
-            nn.Dropout(0.2),
+            layers.Dense(dim1, activation=None),
+            layers.BatchNormalization(),
+            layers.LeakyReLU(0.2),
+            layers.Dropout(0.2),
             
-            nn.Linear(dim1, input_dim)
-        )
+            layers.Dense(input_dim, activation=None)
+        ]
+        
+        # Store architecture info
+        self.architecture_info = {
+            'input_dim': input_dim,
+            'dim1': dim1,
+            'dim2': dim2,
+            'dim3': dim3,
+            'bottleneck': bottleneck
+        }
 
-    def forward(self, x):
-        encoded = self.encoder(x)
-        decoded = self.decoder(encoded)
-        return decoded
+    def call(self, inputs, training=None):
+        # Encoder
+        x = inputs
+        for layer in self.encoder_layers:
+            x = layer(x, training=training)
+        
+        # Store encoded representation
+        encoded = x
+        
+        # Decoder
+        for layer in self.decoder_layers:
+            x = layer(x, training=training)
+        
+        return x
+    
+    def encode(self, inputs, training=None):
+        """Return encoded representation"""
+        x = inputs
+        for layer in self.encoder_layers:
+            x = layer(x, training=training)
+        return x
 
 def improved_train_autoencoder(X, n_epochs=50, batch_size=256, lr=1e-3):
     """
@@ -107,8 +150,17 @@ def improved_train_autoencoder(X, n_epochs=50, batch_size=256, lr=1e-3):
     """
     print(f"Starte Training mit {n_epochs} Epochen")
     
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Device: {device}")
+    # Check for GPU availability
+    gpus = tf.config.experimental.list_physical_devices('GPU')
+    if gpus:
+        print(f"GPU verfügbar: {len(gpus)} GPU(s)")
+        try:
+            for gpu in gpus:
+                tf.config.experimental.set_memory_growth(gpu, True)
+        except RuntimeError as e:
+            print(f"GPU Konfiguration fehlgeschlagen: {e}")
+    else:
+        print("Training auf CPU")
     
     # Prüfe Datenqualität
     print(f"Daten-Shape: {X.shape}")
@@ -116,87 +168,75 @@ def improved_train_autoencoder(X, n_epochs=50, batch_size=256, lr=1e-3):
     print(f"Inf values: {np.isinf(X).sum()}")
     print(f"Data range: {X.min():.4f} to {X.max():.4f}")
     
-    # Daten vorbereiten
-    X_tensor = torch.tensor(X, dtype=torch.float32).to(device)
-    
     # Train/Validation Split für Early Stopping
-    n_val = int(0.2 * len(X))
-    n_train = len(X) - n_val
-    indices = torch.randperm(len(X))
+    X_train, X_val = train_test_split(X, test_size=0.2, random_state=42)
     
-    X_train = X_tensor[indices[:n_train]]
-    X_val = X_tensor[indices[n_train:]]
+    print(f"Train shape: {X_train.shape}, Validation shape: {X_val.shape}")
     
-    train_dataset = TensorDataset(X_train)
-    val_dataset = TensorDataset(X_val)
+    # Model erstellen
+    model = ImprovedFeedForwardAutoencoder(X.shape[1])
     
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+    # Build model by calling it once
+    dummy_input = tf.random.normal((1, X.shape[1]))
+    _ = model(dummy_input)
     
-    # Model und Optimizer
-    model = ImprovedFeedForwardAutoencoder(X.shape[1]).to(device)
-    optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=5, factor=0.5, verbose=True)
-    criterion = nn.MSELoss()
+    # Optimizer 
+    optimizer = optimizers.AdamW(learning_rate=lr, weight_decay=1e-4)
     
-    # Training Loop mit Early Stopping
-    train_losses = []
-    val_losses = []
-    best_val_loss = float('inf')
-    patience_counter = 0
-    patience = 10
+    # Compile model
+    model.compile(
+        optimizer=optimizer,
+        loss='mse',
+        metrics=['mae']
+    )
     
-    for epoch in range(n_epochs):
-        # Training
-        model.train()
-        train_loss = 0
-        for (batch,) in train_loader:
-            optimizer.zero_grad()
-            recon = model(batch)
-            loss = criterion(recon, batch)
-            loss.backward()
-            optimizer.step()
-            train_loss += loss.item() * batch.size(0)
-        
-        train_loss /= len(train_dataset)
-        train_losses.append(train_loss)
-        
-        # Validation
-        model.eval()
-        val_loss = 0
-        with torch.no_grad():
-            for (batch,) in val_loader:
-                recon = model(batch)
-                loss = criterion(recon, batch)
-                val_loss += loss.item() * batch.size(0)
-        
-        val_loss /= len(val_dataset)
-        val_losses.append(val_loss)
-        
-        # Learning Rate Scheduling
-        scheduler.step(val_loss)
-        
-        # Early Stopping
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            patience_counter = 0
-            # Speichere bestes Modell
-            best_model_state = model.state_dict().copy()
-        else:
-            patience_counter += 1
-        
-        if epoch % 5 == 0 or epoch == n_epochs - 1:
-            current_lr = optimizer.param_groups[0]['lr']
-            print(f"Epoch {epoch+1}/{n_epochs} - Train Loss: {train_loss:.6f}, Val Loss: {val_loss:.6f}, LR: {current_lr:.2e}")
-        
-        if patience_counter >= patience:
-            print(f"Early stopping nach Epoche {epoch+1}")
-            break
+    # Callbacks
+    early_stopping = callbacks.EarlyStopping(
+        monitor='val_loss',
+        patience=10,
+        restore_best_weights=True,
+        verbose=1
+    )
     
-    # Lade bestes Modell
-    model.load_state_dict(best_model_state)
+    reduce_lr = callbacks.ReduceLROnPlateau(
+        monitor='val_loss',
+        factor=0.5,
+        patience=5,
+        min_lr=1e-7,
+        verbose=1
+    )
     
-    return model, {'train_losses': train_losses, 'val_losses': val_losses}
+    # Custom callback für Fortschritt
+    class ProgressCallback(callbacks.Callback):
+        def on_epoch_end(self, epoch, logs=None):
+            if epoch % 5 == 0 or epoch == self.params['epochs'] - 1:
+                try:
+                    current_lr = float(self.model.optimizer.learning_rate.numpy())
+                except:
+                    current_lr = lr
+                print(f"Epoch {epoch+1}/{self.params['epochs']} - "
+                      f"Train Loss: {logs['loss']:.6f}, "
+                      f"Val Loss: {logs['val_loss']:.6f}, "
+                      f"LR: {current_lr:.2e}")
+    
+    progress_callback = ProgressCallback()
+    
+    # Training
+    history = model.fit(
+        X_train, X_train,  # Autoencoder: input = target
+        validation_data=(X_val, X_val),
+        epochs=n_epochs,
+        batch_size=batch_size,
+        callbacks=[early_stopping, reduce_lr, progress_callback],
+        verbose=0  # We handle progress with custom callback
+    )
+    
+    return model, {
+        'train_losses': history.history['loss'],
+        'val_losses': history.history['val_loss'],
+        'train_mae': history.history['mae'],
+        'val_mae': history.history['val_mae']
+    }
 
 def reconstruct_timeseries_from_windows(windows, file_indices, data_objects, window_size, step_size, n_features):
     """
@@ -263,6 +303,100 @@ def calculate_reconstruction_error_per_timestep(orig_series, recon_series, featu
     
     return pd.DataFrame(errors)
 
+def create_plots(training_history, orig_test_series, recon_test_series, feature_names, rms_df, n_train_files, output_dir):
+    """
+    Erstellt alle Plots und speichert sie als Dateien
+    """
+    if not PLOTTING_AVAILABLE:
+        print("Plots werden übersprungen (matplotlib nicht verfügbar)")
+        return
+    
+    try:
+        # 1. Training Loss Plot
+        plt.figure(figsize=(12, 5))
+        
+        plt.subplot(1, 2, 1)
+        plt.plot(training_history['train_losses'], label='Training Loss', marker='o', markersize=2)
+        plt.plot(training_history['val_losses'], label='Validation Loss', marker='o', markersize=2)
+        plt.xlabel('Epoche')
+        plt.ylabel('Loss')
+        plt.title('Training und Validation Loss')
+        plt.legend()
+        plt.grid(True)
+        
+        plt.subplot(1, 2, 2)
+        plt.plot(training_history['train_losses'], label='Training Loss')
+        plt.plot(training_history['val_losses'], label='Validation Loss')
+        plt.xlabel('Epoche')
+        plt.ylabel('Loss (Log Scale)')
+        plt.title('Training und Validation Loss (Log)')
+        plt.yscale('log')
+        plt.legend()
+        plt.grid(True)
+        
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, 'training_loss.png'), dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        # 2. Reconstruction Example Plot
+        test_file_idx = 0
+        feature_idx = 0
+        
+        if test_file_idx in orig_test_series and feature_idx < len(feature_names):
+            orig = orig_test_series[test_file_idx]
+            recon = recon_test_series[test_file_idx]
+            
+            plt.figure(figsize=(15, 8))
+            
+            # Subplot 1: Vollständige Zeitreihe
+            plt.subplot(2, 1, 1)
+            plt.plot(orig[:, feature_idx], label='Original', alpha=0.8, linewidth=1)
+            plt.plot(recon[:, feature_idx], label='Rekonstruktion', alpha=0.8, linewidth=1)
+            plt.title(f'Original vs. Rekonstruktion (Testdatei {test_file_idx+1}, Feature: {feature_names[feature_idx]})')
+            plt.xlabel('Zeitindex')
+            plt.ylabel('Normierter Wert')
+            plt.legend()
+            plt.grid(True, alpha=0.3)
+            
+            # Subplot 2: Zoom auf ersten 1000 Punkte
+            plt.subplot(2, 1, 2)
+            zoom_end = min(1000, len(orig))
+            plt.plot(orig[:zoom_end, feature_idx], label='Original', alpha=0.8, linewidth=1)
+            plt.plot(recon[:zoom_end, feature_idx], label='Rekonstruktion', alpha=0.8, linewidth=1)
+            plt.title(f'Detail-Ansicht (erste {zoom_end} Punkte)')
+            plt.xlabel('Zeitindex')
+            plt.ylabel('Normierter Wert')
+            plt.legend()
+            plt.grid(True, alpha=0.3)
+            
+            plt.tight_layout()
+            plt.savefig(os.path.join(output_dir, 'reconstruction_example.png'), dpi=300, bbox_inches='tight')
+            plt.close()
+        
+        # 3. RMS Error Plot
+        plt.figure(figsize=(15, 8))
+        
+        for feat in feature_names:
+            subset = rms_df[rms_df['feature'] == feat].sort_values('file_idx')
+            plt.plot(subset['file_idx'], subset['rms'], marker='o', linestyle='-', label=feat, markersize=4)
+        
+        # Linie für Train/Test-Split
+        plt.axvline(n_train_files - 0.5, color='red', linestyle='--', linewidth=2, label='Train/Test-Grenze')
+        
+        plt.xlabel('Datei-Index (Train + Test)')
+        plt.ylabel('RMS Fehler')
+        plt.title('RMS Rekonstruktionsfehler pro Datei (pro Feature)')
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, 'rms_errors.png'), dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        print("Plots erfolgreich erstellt und gespeichert")
+        
+    except Exception as e:
+        print(f"Fehler beim Erstellen der Plots: {e}")
+
 ######################################################
 #----------------------------------------------------#
 ######################## MAIN ########################
@@ -271,6 +405,7 @@ def calculate_reconstruction_error_per_timestep(orig_series, recon_series, featu
 
 def main():
     # Verzeichnis mit TransKI-Daten
+    print("TensorFlow Version")
     data_folder = r'D:\\01_Diss\\01_Versuchsdaten\\01_TransKI\\01_Fraesen_Stand\\IfW\\Grob\\Toolox33\\Toolox33_Standzeit_IfW_eID1156'  # ggf. anpassen
 
     # Alle Dateien im Verzeichnis auflisten
@@ -374,44 +509,14 @@ def main():
         lr=1e-3
     )
 
-    # Visualisierung des Trainings-Loss
-    plt.figure(figsize=(12, 5))
-    
-    plt.subplot(1, 2, 1)
-    plt.plot(training_history['train_losses'], label='Training Loss', marker='o', markersize=2)
-    plt.plot(training_history['val_losses'], label='Validation Loss', marker='o', markersize=2)
-    plt.xlabel('Epoche')
-    plt.ylabel('Loss')
-    plt.title('Training und Validation Loss')
-    plt.legend()
-    plt.grid(True)
-    
-    plt.subplot(1, 2, 2)
-    plt.plot(training_history['train_losses'], label='Training Loss')
-    plt.plot(training_history['val_losses'], label='Validation Loss')
-    plt.xlabel('Epoche')
-    plt.ylabel('Loss (Log Scale)')
-    plt.title('Training und Validation Loss (Log)')
-    plt.yscale('log')
-    plt.legend()
-    plt.grid(True)
-    
-    plt.tight_layout()
-    plt.show()
-
     # Anwendung des Autoencoders auf Test- und Trainingsdaten
     print("\nWende Autoencoder auf Daten an...")
-    model.eval()
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    with torch.no_grad():
-        # Test Rekonstruktion
-        X_ae_test_tensor = torch.tensor(X_ae_test, dtype=torch.float32).to(device)
-        X_ae_test_recon = model(X_ae_test_tensor).cpu().numpy()
-        
-        # Train Rekonstruktion
-        X_ae_train_tensor = torch.tensor(X_ae_train, dtype=torch.float32).to(device)
-        X_ae_train_recon = model(X_ae_train_tensor).cpu().numpy()
+    # Test Rekonstruktion
+    X_ae_test_recon = model.predict(X_ae_test, batch_size=512, verbose=0)
+    
+    # Train Rekonstruktion
+    X_ae_train_recon = model.predict(X_ae_train, batch_size=512, verbose=0)
 
     # Fenster wieder in [n_windows, window_size, n_features] bringen
     n_features = len(feature_names)
@@ -432,40 +537,6 @@ def main():
     recon_test_series = reconstruct_timeseries_from_windows(
         X_windows_test_recon, file_idx_test, test_objects, window_size, step_size, n_features
     )
-
-    # Beispielplot: Original vs. Rekonstruktion für eine Testdatei und ein Feature
-    test_file_idx = 0
-    feature_idx = 0
-    
-    if test_file_idx in orig_test_series and feature_idx < len(feature_names):
-        orig = orig_test_series[test_file_idx]
-        recon = recon_test_series[test_file_idx]
-        
-        plt.figure(figsize=(15, 8))
-        
-        # Subplot 1: Vollständige Zeitreihe
-        plt.subplot(2, 1, 1)
-        plt.plot(orig[:, feature_idx], label='Original', alpha=0.8, linewidth=1)
-        plt.plot(recon[:, feature_idx], label='Rekonstruktion', alpha=0.8, linewidth=1)
-        plt.title(f'Original vs. Rekonstruktion (Testdatei {test_file_idx+1}, Feature: {feature_names[feature_idx]})')
-        plt.xlabel('Zeitindex')
-        plt.ylabel('Normierter Wert')
-        plt.legend()
-        plt.grid(True, alpha=0.3)
-        
-        # Subplot 2: Zoom auf ersten 1000 Punkte
-        plt.subplot(2, 1, 2)
-        zoom_end = min(1000, len(orig))
-        plt.plot(orig[:zoom_end, feature_idx], label='Original', alpha=0.8, linewidth=1)
-        plt.plot(recon[:zoom_end, feature_idx], label='Rekonstruktion', alpha=0.8, linewidth=1)
-        plt.title(f'Detail-Ansicht (erste {zoom_end} Punkte)')
-        plt.xlabel('Zeitindex')
-        plt.ylabel('Normierter Wert')
-        plt.legend()
-        plt.grid(True, alpha=0.3)
-        
-        plt.tight_layout()
-        plt.show()
 
     # Pro Datei und Feature: RMS der Rekonstruktionsfehler (Training und Test)
     def rms_feature(orig, recon):
@@ -499,24 +570,6 @@ def main():
     
     rms_df = pd.DataFrame(rms_per_file_feature)
 
-    # Plot: RMS pro Datei (x-Achse: Datei-Index fortlaufend, Linien: Features)
-    plt.figure(figsize=(15, 8))
-    
-    for feat in feature_names:
-        subset = rms_df[rms_df['feature'] == feat].sort_values('file_idx')
-        plt.plot(subset['file_idx'], subset['rms'], marker='o', linestyle='-', label=feat, markersize=4)
-    
-    # Linie für Train/Test-Split
-    plt.axvline(n_train_files - 0.5, color='red', linestyle='--', linewidth=2, label='Train/Test-Grenze')
-    
-    plt.xlabel('Datei-Index (Train + Test)')
-    plt.ylabel('RMS Fehler')
-    plt.title('RMS Rekonstruktionsfehler pro Datei (pro Feature)')
-    plt.legend()
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.show()
-
     # Statistiken ausgeben
     print("\n=== ZUSAMMENFASSUNG ===")
     print(f"Trainierte Epochen: {len(training_history['train_losses'])}")
@@ -531,46 +584,76 @@ def main():
     print(f"Test RMS - Mean: {test_rms.mean():.6f}, Std: {test_rms.std():.6f}")
     
     # Erstelle Ausgabeordner mit Datum und Modellinfo
-    from datetime import datetime
     timestamp = datetime.now().strftime("%Y%m%d_%H%M")
     
     # Bestimme Architektur-String
     input_dim = X_ae_train.shape[1]
-    dim1 = max(input_dim // 2, 64)
-    dim2 = max(input_dim // 4, 32)
-    dim3 = max(input_dim // 8, 16)
-    bottleneck = max(input_dim // 16, 8)
-    arch_string = f"{input_dim}_{dim1}_{dim2}_{dim3}_{bottleneck}"
+    arch_info = model.architecture_info
+    arch_string = f"{arch_info['input_dim']}_{arch_info['dim1']}_{arch_info['dim2']}_{arch_info['dim3']}_{arch_info['bottleneck']}"
     
-    output_dir = f"D:\\01_Diss\\02_Trainings\\{timestamp}_FFNN_AE_{arch_string}"
+    output_dir = f"D:\\01_Diss\\02_Trainings\\{timestamp}_TF_FFNN_AE_{arch_string}"
     os.makedirs(output_dir, exist_ok=True)
     print(f"\nErstelle Ausgabeordner: {output_dir}")
     
-    # 1. Speichere das trainierte Modell
-    model_path = os.path.join(output_dir, "autoencoder_model.pth")
-    torch.save({
-        'model_state_dict': model.state_dict(),
-        'model_architecture': {
-            'input_dim': input_dim,
-            'dim1': dim1,
-            'dim2': dim2, 
-            'dim3': dim3,
-            'bottleneck': bottleneck
-        },
+    # Erstelle Plots
+    create_plots(training_history, orig_test_series, recon_test_series, feature_names, rms_df, n_train_files, output_dir)
+    
+    # 1. Speichere das trainierte Modell (TensorFlow Format)
+    model_path = os.path.join(output_dir, "autoencoder_model")
+    try:
+        model.save(model_path, save_format='tf')
+        print(f"TensorFlow Modell gespeichert: {model_path}")
+    except Exception as e:
+        print(f"Fehler beim Speichern des TF Modells: {e}")
+    
+    # Speichere auch als .h5 für Kompatibilität
+    h5_model_path = os.path.join(output_dir, "autoencoder_model.h5")
+    try:
+        model.save(h5_model_path)
+        print(f"H5 Modell gespeichert: {h5_model_path}")
+    except Exception as e:
+        print(f"Fehler beim Speichern des H5 Modells: {e}")
+    
+    # Speichere zusätzliche Metadaten
+    metadata = {
+        'model_architecture': arch_info,
         'feature_names': feature_names,
         'window_size': window_size,
         'step_size': step_size,
         'n_epochs_trained': len(training_history['train_losses']),
-        'final_train_loss': training_history['train_losses'][-1],
-        'final_val_loss': training_history['val_losses'][-1]
-    }, model_path)
-    print(f"Modell gespeichert: {model_path}")
+        'final_train_loss': float(training_history['train_losses'][-1]),
+        'final_val_loss': float(training_history['val_losses'][-1]),
+        'framework': 'tensorflow',
+        'tf_version': tf.__version__,
+        'training_parameters': {
+            'batch_size': 512,
+            'learning_rate': 1e-3,
+            'optimizer': 'AdamW',
+            'weight_decay': 1e-4,
+            'early_stopping_patience': 10,
+            'lr_reduction_patience': 5,
+            'lr_reduction_factor': 0.5
+        },
+        'data_info': {
+            'n_train_files': len(train_objects),
+            'n_test_files': len(test_objects),
+            'n_train_windows': X_windows_train.shape[0],
+            'n_test_windows': X_windows_test.shape[0],
+            'normalization': 'z-score'
+        }
+    }
+    
+    metadata_path = os.path.join(output_dir, "model_metadata.json")
+    with open(metadata_path, 'w') as f:
+        json.dump(metadata, f, indent=2)
+    print(f"Metadaten gespeichert: {metadata_path}")
     
     # 2. Speichere Modell-Informationen als Text
     info_path = os.path.join(output_dir, "model_info.txt")
     with open(info_path, 'w', encoding='utf-8') as f:
-        f.write("=== AUTOENCODER MODELL INFORMATIONEN ===\n")
+        f.write("=== TENSORFLOW AUTOENCODER MODELL INFORMATIONEN ===\n")
         f.write(f"Erstellungsdatum: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}\n")
+        f.write(f"Framework: TensorFlow {tf.__version__}\n")
         f.write(f"Datenordner: {data_folder}\n\n")
         
         f.write("=== DATEN ===\n")
@@ -587,9 +670,9 @@ def main():
         f.write(f"Test Windows: {X_windows_test.shape[0]}\n\n")
         
         f.write("=== MODELL ARCHITEKTUR ===\n")
-        f.write("Typ: Feed-Forward Autoencoder\n")
-        f.write(f"Encoder: {input_dim} -> {dim1} -> {dim2} -> {dim3} -> {bottleneck}\n")
-        f.write(f"Decoder: {bottleneck} -> {dim3} -> {dim2} -> {dim1} -> {input_dim}\n")
+        f.write("Typ: Feed-Forward Autoencoder (TensorFlow/Keras)\n")
+        f.write(f"Encoder: {input_dim} -> {arch_info['dim1']} -> {arch_info['dim2']} -> {arch_info['dim3']} -> {arch_info['bottleneck']}\n")
+        f.write(f"Decoder: {arch_info['bottleneck']} -> {arch_info['dim3']} -> {arch_info['dim2']} -> {arch_info['dim1']} -> {input_dim}\n")
         f.write("Aktivierung: LeakyReLU(0.2)\n")
         f.write("Regularisierung: BatchNorm + Dropout(0.2)\n")
         f.write("Optimizer: AdamW mit Weight Decay 1e-4\n")
@@ -601,6 +684,7 @@ def main():
         f.write(f"Batch Size: 512\n")
         f.write(f"Learning Rate: 1e-3\n")
         f.write(f"Early Stopping: Ja (Patience: 10)\n")
+        f.write(f"LR Reduction: Ja (Patience: 5, Factor: 0.5)\n")
         f.write(f"Train/Val Split: 80/20\n\n")
         
         f.write("=== ERGEBNISSE ===\n")
@@ -615,7 +699,9 @@ def main():
     history_df = pd.DataFrame({
         'epoch': range(1, len(training_history['train_losses']) + 1),
         'train_loss': training_history['train_losses'],
-        'val_loss': training_history['val_losses']
+        'val_loss': training_history['val_losses'],
+        'train_mae': training_history['train_mae'],
+        'val_mae': training_history['val_mae']
     })
     history_path = os.path.join(output_dir, "training_history.csv")
     history_df.to_csv(history_path, index=False)
@@ -653,7 +739,9 @@ def main():
     # 6. Speichere Normalisierungsparameter
     norm_info = {
         'train_files': [],
-        'test_files': []
+        'test_files': [],
+        'feature_names': feature_names,
+        'normalization_method': 'z-score'
     }
     
     for i, params in enumerate(norm_params_train):
@@ -672,7 +760,6 @@ def main():
             'std': params['std'].tolist()
         })
     
-    import json
     norm_path = os.path.join(output_dir, "normalization_params.json")
     with open(norm_path, 'w') as f:
         json.dump(norm_info, f, indent=2)
@@ -681,21 +768,39 @@ def main():
     # 7. Erstelle README für den Ordner
     readme_path = os.path.join(output_dir, "README.txt")
     with open(readme_path, 'w', encoding='utf-8') as f:
-        f.write("=== ORDNER INHALT ===\n\n")
-        f.write("autoencoder_model.pth - Trainiertes PyTorch Modell\n")
-        f.write("model_info.txt - Detaillierte Modell-Informationen\n")
+        f.write("=== TENSORFLOW AUTOENCODER ORDNER INHALT ===\n\n")
+        f.write("autoencoder_model/ - Trainiertes TensorFlow SavedModel Format\n")
+        f.write("autoencoder_model.h5 - Trainiertes Keras H5 Format\n")
+        f.write("model_metadata.json - Maschinenlesbare Modell-Metadaten (JSON)\n")
+        f.write("model_info.txt - Menschenlesbare Modell-Informationen\n")
         f.write("training_history.csv - Loss-Verlauf während Training\n")
-        f.write("reconstruction_errors_excel.csv - RMS-Fehler (Excel-freundlich, Features als Spalten)\n")
+        f.write("reconstruction_errors_excel.csv - RMS-Fehler (Excel-Format, Features als Spalten)\n")
         f.write("reconstruction_errors_original.csv - RMS-Fehler (Original-Format)\n")
         f.write("normalization_params.json - Z-Score Parameter pro Datei\n")
+        f.write("training_loss.png - Training Loss Plots\n")
+        f.write("reconstruction_example.png - Beispiel Rekonstruktion\n")
+        f.write("rms_errors.png - RMS Fehler pro Datei\n")
         f.write("README.txt - Diese Datei\n\n")
-        f.write("=== MODELL LADEN ===\n\n")
-        f.write("# Python Code zum Laden:\n")
-        f.write("import torch\n")
-        f.write("checkpoint = torch.load('autoencoder_model.pth')\n")
-        f.write("# Model State: checkpoint['model_state_dict']\n")
-        f.write("# Architektur: checkpoint['model_architecture']\n")
-        f.write("# Features: checkpoint['feature_names']\n")
+        
+        f.write("=== TENSORFLOW MODELL LADEN ===\n\n")
+        f.write("# Python Code zum Laden des SavedModel:\n")
+        f.write("import tensorflow as tf\n")
+        f.write("model = tf.keras.models.load_model('autoencoder_model')\n\n")
+        
+        f.write("# Alternativ H5 Format laden:\n")
+        f.write("model = tf.keras.models.load_model('autoencoder_model.h5')\n\n")
+        
+        f.write("# Metadaten laden:\n")
+        f.write("import json\n")
+        f.write("with open('model_metadata.json', 'r') as f:\n")
+        f.write("    metadata = json.load(f)\n\n")
+        
+        f.write("# Für Inference:\n")
+        f.write("# 1. Daten gleich normalisieren wie Training (Z-Score)\n")
+        f.write("# 2. In Fenster aufteilen (window_size, step_size aus Metadaten)\n")
+        f.write("# 3. Zu 2D umformen: windows.reshape(n_windows, -1)\n")
+        f.write("# 4. Modell anwenden: reconstructed = model.predict(data)\n")
+        f.write("# 5. Zurück zu 3D: reconstructed.reshape(-1, window_size, n_features)\n")
     
     print(f"README erstellt: {readme_path}")
     print(f"\n=== ALLE DATEIEN GESPEICHERT IN: {output_dir} ===")
