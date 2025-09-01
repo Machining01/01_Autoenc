@@ -410,7 +410,7 @@ def main():
     data_folder = r'E:\\01_TransKI_Versuche\\02_STAND_TOOL_FRS\\empolis_onedrive\\Toolox33_Standzeit_IfW_eID1604'
     
     # Alle Dateien im Verzeichnis auflisten
-    files = [f for f in os.listdir(data_folder) if f.endswith('.txt') or "Maschinendaten" in f]
+    files = [f for f in os.listdir(data_folder) if f.endswith('.txt') and "Maschinendaten" in f]
 
     # Sortiere die Dateien nach der Endnummer (z.B. "0001", "0002", ...)
     def extract_file_number(filename):
@@ -437,7 +437,7 @@ def main():
     for file in train_files:
         try:
             obj = ifw_data(data_folder, file, 'TransKI')
-            if obj.header_info['error'] == "false":
+            if obj.header['error'] == "false":
                 train_objects.append(obj)
         except Exception as e:
             print(f"Fehler beim Laden von {file}: {e}")
@@ -446,7 +446,7 @@ def main():
     for file in test_files:
         try:
             obj = ifw_data(data_folder, file, 'TransKI')
-            if obj.header_info['error'] == "false":
+            if obj.header['error'] == "false":
                 test_objects.append(obj)
         except Exception as e:
             print(f"Fehler beim Laden von {file}: {e}")
