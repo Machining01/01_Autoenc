@@ -406,8 +406,9 @@ def create_plots(training_history, orig_test_series, recon_test_series, feature_
 def main():
     # Verzeichnis mit TransKI-Daten
     print("TensorFlow Version")
-    data_folder = r'D:\\01_Diss\\01_Versuchsdaten\\01_TransKI\\01_Fraesen_Stand\\IfW\\Grob\\Toolox33\\Toolox33_Standzeit_IfW_eID1156'  # ggf. anpassen
-
+    #data_folder = r'D:\\01_Diss\\01_Versuchsdaten\\01_TransKI\\01_Fraesen_Stand\\IfW\\Grob\\Toolox33\\Toolox33_Standzeit_IfW_eID1156'  # ggf. anpassen
+    data_folder = r'E:\\01_TransKI_Versuche\\02_STAND_TOOL_FRS\\empolis_onedrive\\Toolox33_Standzeit_IfW_eID1604'
+    
     # Alle Dateien im Verzeichnis auflisten
     files = [f for f in os.listdir(data_folder) if f.endswith('.txt') or "Maschinendaten" in f]
 
@@ -436,7 +437,8 @@ def main():
     for file in train_files:
         try:
             obj = ifw_data(data_folder, file, 'TransKI')
-            train_objects.append(obj)
+            if obj.header_info['error'] == "false":
+                train_objects.append(obj)
         except Exception as e:
             print(f"Fehler beim Laden von {file}: {e}")
 
@@ -444,7 +446,8 @@ def main():
     for file in test_files:
         try:
             obj = ifw_data(data_folder, file, 'TransKI')
-            test_objects.append(obj)
+            if obj.header_info['error'] == "false":
+                test_objects.append(obj)
         except Exception as e:
             print(f"Fehler beim Laden von {file}: {e}")
 
